@@ -9,44 +9,30 @@ import os
 class ImprovedSuperteamBountyScraper:
     def __init__(self, links_file='data/bounty_links.txt', json_file='data/superteam_bounties.json'):
         self.links_file = links_file
-        self.json_file = json_file  # Add this line
+        self.json_file = json_file
         self.base_url = 'https://earn.superteam.fun/listing/'
         self.results = []
         self.progress_file = 'output/scraping_progress.json'
         self.bounty_data_cache = {}  # Cache for API data
+        self.processed_file = 'data/processed_bounties.json'
+        self.results_file = 'output/bounty_descriptions.json'
         
-        # XPath for country restriction element
-        self.country_xpath = '//*[@id="__next"]/div/div[4]/div/div/div[1]/div[1]/div[2]/div/button/div/span'
-        
-        # Multiple selector strategies to try
+        # Add the missing description_selectors attribute
         self.description_selectors = [
-            # Try common description containers
-            '[data-testid*="description"]',
-            '[class*="description"]',
-            '[class*="content"]',
-            '[class*="detail"]',
-            '[class*="body"]',
-            
-            # Try semantic HTML elements
-            'main p',
-            'article p',
-            'section p',
-            
-            # Try by text content patterns
-            'div:has-text("Description")',
-            'div:has-text("About")',
-            'div:has-text("Details")',
-            
-            # Generic content areas
-            'main div div div div div p',
-            'main div div div div p',
-            '[role="main"] p',
-            
-            # Fallback to any substantial text content
-            'main div:has(p)',
-            'div[class*="container"] p'
+            'div[class*="description"]',
+            'div[class*="content"]',
+            'div[data-testid*="description"]',
+            'div[class*="body"]',
+            'div[class*="details"]',
+            '.description',
+            '.content',
+            '.bounty-description',
+            '.listing-description',
+            'article',
+            'section[class*="description"]',
+            'div[class*="text"]'
         ]
-    
+
     def load_bounties(self):
         """Load bounty data from JSON file"""
         try:
@@ -360,11 +346,15 @@ class ImprovedSuperteamBountyScraper:
             # Get reward amount from cached API data first
             reward_amount = None
             token = ""
+            deadline = ""
+            sponsor = ""
             
             if slug in self.bounty_data_cache:
                 api_data = self.bounty_data_cache[slug]
                 reward_amount = api_data.get('rewardAmount')
                 token = api_data.get('token', '')
+                deadline = api_data.get('deadline', '')
+                sponsor = api_data.get('sponsor', {}).get('name', '') if api_data.get('sponsor') else ''
                 # Use API title if available
                 if api_data.get('title'):
                     title = api_data['title']
@@ -383,8 +373,8 @@ class ImprovedSuperteamBountyScraper:
                 'country_restriction': country_restriction,  # New field
                 'reward_amount': reward_amount,
                 'token': token,
-                'deadline': '',
-                'sponsor': '',
+                'deadline': deadline,  # Now uses API data
+                'sponsor': sponsor,    # Now uses API data
                 'status': 'active'
             }
             
@@ -505,7 +495,98 @@ class ImprovedSuperteamBountyScraper:
         for country, count in summary['country_breakdown'].items():
             print(f"  {country}: {count} bounties")
 
-# Add these methods to the ImprovedSuperteamBountyScraper class (around line 280, after the save_results method from the sample scraper)
+# Add these methods to the ImprovedSuperteamBountyScraper class (around line 520, before the main() function)
+
+    def load_processed_bounties(self):
+        """Load previously processed bounty IDs"""
+        try:
+            with open(self.processed_file, 'r') as f:
+                return set(json.load(f))
+        except FileNotFoundError:
+            return set()
+    
+    def save_processed_bounties(self, bounty_ids):
+        """Save processed bounty IDs"""
+        with open(self.processed_file, 'w') as f:
+            json.dump(list(bounty_ids), f)
+    
+    def load_existing_results(self):
+        """Load existing results from output file"""
+        try:
+            with open(self.results_file, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except FileNotFoundError:
+            return []
+    
+    async def scrape_new_bounties_only(self):
+        """Scrape only new bounties that haven't been processed yet"""
+        print("🚀 Starting incremental bounty scraping...")
+        
+        # Load processed bounties and existing results
+        processed_ids = self.load_processed_bounties()
+        existing_results = self.load_existing_results()
+        
+        # Load bounty data and filter for new ones
+        all_bounties = self.load_bounties()
+        new_bounties = [b for b in all_bounties if b['id'] not in processed_ids]
+        
+        if not new_bounties:
+            print("No new bounties to process.")
+            return
+        
+        print(f"Found {len(new_bounties)} new bounties to scrape")
+        
+        # Load bounty data cache
+        self.load_bounty_data_cache()
+        
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True)
+            context = await browser.new_context()
+            page = await context.new_page()
+            
+            new_results = []
+            new_processed_ids = set()
+            
+            for i, bounty in enumerate(new_bounties, 1):
+                slug = bounty['slug']
+                url = f"https://earn.superteam.fun/listing/{slug}"
+                
+                print(f"\n[{i}/{len(new_bounties)}] Processing: {slug}")
+                
+                try:
+                    result = await self.scrape_bounty_from_url(page, url)
+                    if result:
+                        new_results.append(result)
+                        new_processed_ids.add(bounty['id'])
+                        print(f"  ✅ Successfully scraped: {slug}")
+                    else:
+                        print(f"  ⚠️  No content found for: {slug}")
+                        
+                except Exception as e:
+                    print(f"  ❌ Error scraping {slug}: {str(e)}")
+                
+                # Small delay between requests
+                await asyncio.sleep(1)
+            
+            await browser.close()
+        
+        # Update results and processed IDs
+        if new_results:
+            all_results = existing_results + new_results
+            
+            # Save updated results
+            with open(self.results_file, 'w', encoding='utf-8') as f:
+                json.dump(all_results, f, indent=2, ensure_ascii=False)
+            
+            # Update processed bounties
+            all_processed_ids = processed_ids.union(new_processed_ids)
+            self.save_processed_bounties(all_processed_ids)
+            
+            print(f"\n✅ Successfully processed {len(new_results)} new bounties")
+            print(f"📁 Results saved to: {self.results_file}")
+            print(f"📊 Total bounties in database: {len(all_results)}")
+        else:
+            print("\n⚠️  No new results to save")
 
     def load_bounty_links(self):
         """Load bounty URLs from text file"""
