@@ -98,3 +98,7 @@ coverage.xml
 
 # Large API response files
 openapi-spec*.json
+# Output files
+output/*.json
+output/*.csv
+output/*.txt
