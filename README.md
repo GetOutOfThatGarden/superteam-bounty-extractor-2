@@ -1,29 +1,36 @@
 # Superteam Bounty Extractor
 
-A Python tool to automatically extract and monitor bounties from [earn.superteam.fun](https://earn.superteam.fun) with detailed scraping capabilities.
+A comprehensive Python tool to automatically extract, monitor, and analyze bounties from [earn.superteam.fun](https://earn.superteam.fun) with detailed scraping capabilities and prize extraction.
 
 ## Features
 
 - 🔍 **API Integration**: Fetches bounty data directly from Superteam's API
 - 🕷️ **Web Scraping**: Extracts detailed bounty descriptions and metadata using Playwright
+- 💰 **Prize Extraction**: Automatically extracts individual prize breakdowns and total rewards
 - 📊 **Smart Monitoring**: Only processes new bounties to avoid duplicates
 - 💾 **Data Persistence**: Saves bounty data in JSON format and tracks processed bounties
 - 🔗 **Link Extraction**: Generates direct links to bounty pages for easy access
 - ⚡ **Async Processing**: Efficient asynchronous scraping for better performance
+- 🎯 **Complete Workflow**: Orchestrated pipeline from API fetching to prize extraction
 
 ## Project Structure
 
 superteam-bounty-extractor/
+├── main.py                     # Main orchestrator script - runs complete workflow
 ├── src/
 │   ├── bounty_api_client.py    # API client for fetching bounty data
-│   ├── bounty_monitor.py       # Main monitoring and orchestration script
-│   └── bounty_scraper.py       # Web scraper for detailed bounty extraction
+│   ├── bounty_monitor.py       # Monitoring and orchestration script
+│   ├── bounty_scraper.py       # Web scraper for detailed bounty extraction
+│   └── prize_extractor.py      # Prize breakdown and reward extraction
 ├── data/
 │   ├── bounty_links.txt        # Generated bounty URLs
 │   ├── processed_bounties.json # Tracking processed bounties
 │   └── superteam_bounties.json # Raw bounty data from API
-├── output/                     # Scraped bounty details
+├── output/
+│   └── bounty_descriptions.json # Complete bounty data with prizes
+├── prize_extraction_results_*.json # Prize extraction results with timestamps
 └── requirements.txt
+
 
 
 ## Installation
@@ -54,19 +61,35 @@ superteam-bounty-extractor/
 
 ## Usage
 
-### Basic Usage
+### Complete Workflow (Recommended)
 
-Run the bounty monitor to check for new bounties and scrape them:
+Run the main orchestrator to execute the complete bounty extraction pipeline:
 
+```bash
+python main.py
+```
+
+This will:
+1. Fetch bounties from the API
+2. Scrape detailed descriptions
+3. Extract prize breakdowns
+4. Merge all data into `output/bounty_descriptions.json`
+
+### Individual Components
+
+**Run bounty monitoring only**:
 ```bash
 cd src
 python bounty_monitor.py
 ```
 
-### Running as a Module
+**Extract prizes from existing bounties**:
+```bash
+cd src
+python prize_extractor.py
+```
 
-Alternatively, you can run it as a Python module from the project root:
-
+**Run as a module**:
 ```bash
 # First create __init__.py in src directory
 touch src/__init__.py
@@ -77,18 +100,30 @@ python -m src.bounty_monitor
 
 ## How It Works
 
-1. **API Fetching**: The tool connects to Superteam's API to fetch the latest bounty data
+1. **API Fetching**: Connects to Superteam's API to fetch the latest bounty data
 2. **New Bounty Detection**: Compares with previously processed bounties to identify new ones
 3. **Link Generation**: Creates direct URLs to bounty pages on earn.superteam.fun
 4. **Web Scraping**: Uses Playwright to extract detailed bounty descriptions and metadata
-5. **Data Storage**: Saves all data in structured JSON format for further processing
+5. **Prize Extraction**: Analyzes bounty pages to extract individual prize amounts and breakdowns
+6. **Data Merging**: Combines all extracted data into comprehensive bounty profiles
+7. **Data Storage**: Saves all data in structured JSON format for further processing
+
+## Prize Extraction Features
+
+The prize extractor includes:
+- **Multiple Extraction Strategies**: Uses various HTML parsing methods for robust extraction
+- **Range Position Handling**: Expands ranges like "5th - 10th" into individual positions
+- **Token Type Detection**: Identifies prize currencies (USDC, SOL, etc.)
+- **Validation**: Verifies extracted amounts match expected totals
+- **Error Handling**: Graceful handling of missing or malformed prize data
 
 ## Output Files
 
+- **`output/bounty_descriptions.json`**: Complete bounty data including descriptions and extracted prizes
+- **`prize_extraction_results_*.json`**: Detailed prize extraction results with timestamps
 - **`data/superteam_bounties.json`**: Raw bounty data from the API
 - **`data/bounty_links.txt`**: Direct links to all bounty pages
 - **`data/processed_bounties.json`**: IDs of bounties that have been processed
-- **`output/`**: Directory containing detailed scraped bounty information
 
 ## Configuration
 
@@ -96,12 +131,15 @@ The tool automatically handles:
 - Missing data directories (creates them as needed)
 - First-time runs (initializes tracking files)
 - Error handling for network issues and missing files
+- URL domain corrections for proper prize extraction
 
 ## Dependencies
 
 - **requests**: For API communication
 - **playwright**: For web scraping with browser automation
 - **asyncio**: For asynchronous processing
+- **json**: For data serialization
+- **re**: For regex pattern matching in prize extraction
 
 ## Troubleshooting
 
@@ -113,13 +151,48 @@ The tool automatically handles:
 
 3. **Playwright browser issues**: Run `playwright install` to ensure browsers are properly installed
 
+4. **Prize extraction failures**: Check that bounty URLs use the correct domain (earn.superteam.fun)
+
+5. **Empty prize data**: Ensure bounties have loaded completely before extraction
+
 ### Running from Different Directories
 
-If you encounter path issues, the recommended approach is to run from the `src` directory:
+For individual components, the recommended approach is to run from the `src` directory:
 
 ```bash
 cd src
 python bounty_monitor.py
+```
+
+For the complete workflow, run from the project root:
+
+```bash
+python main.py
+```
+
+## Example Output
+
+The tool generates comprehensive bounty data including:
+
+```json
+{
+  "title": "Build a Solana DeFi Dashboard",
+  "slug": "build-solana-defi-dashboard",
+  "url": "https://earn.superteam.fun/listings/bounty/build-solana-defi-dashboard",
+  "description": "Create a comprehensive dashboard...",
+  "reward_amount": "$5,000 USDC",
+  "extracted_prize_data": {
+    "total_reward": "5000",
+    "prize_breakdown": [
+      {"position": "1st", "amount": "3000"},
+      {"position": "2nd", "amount": "1500"},
+      {"position": "3rd", "amount": "500"}
+    ],
+    "token_type": "USDC",
+    "individual_sum": "5000",
+    "amounts_match": true
+  }
+}
 ```
 
 ## Contributing
