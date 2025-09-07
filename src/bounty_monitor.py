@@ -1,7 +1,7 @@
 import asyncio
 import time
-from .extract_bounty_links import get_new_bounties_only, save_bounty_data
-from .scrape_bounty_descriptions_playwright_improved import ImprovedSuperteamBountyScraper
+from bounty_api_client import get_new_bounties_only, save_bounty_data
+from bounty_scraper import ImprovedSuperteamBountyScraper
 
 async def monitor_and_scrape():
     """Check for new bounties and scrape them"""
