@@ -7,11 +7,11 @@ import csv
 import os
 
 class ImprovedSuperteamBountyScraper:
-    def __init__(self, json_file='superteam_bounties.json'):
+    def __init__(self, json_file='data/superteam_bounties.json'):
         self.json_file = json_file
         self.base_url = 'https://earn.superteam.fun/listing/'
         self.results = []
-        self.progress_file = 'scraping_progress.json'
+        self.progress_file = 'output/scraping_progress.json'
         
         # Multiple selector strategies to try
         self.description_selectors = [
@@ -282,11 +282,12 @@ class ImprovedSuperteamBountyScraper:
             return
         
         # Save as JSON
-        with open(f'bounty_descriptions{filename_suffix}.json', 'w', encoding='utf-8') as f:
+        # Around line 285-289, update the save methods:
+        with open(f'output/bounty_descriptions{filename_suffix}.json', 'w', encoding='utf-8') as f:
             json.dump(self.results, f, indent=2, ensure_ascii=False)
         
-        # Save as text file with URLs and descriptions
-        with open(f'bounty_descriptions{filename_suffix}.txt', 'w', encoding='utf-8') as f:
+        print(f"\nResults saved to:")
+        with open(f'output/bounty_descriptions{filename_suffix}.txt', 'w', encoding='utf-8') as f:
             for result in self.results:
                 f.write(f"Title: {result['title']}\n")
                 f.write(f"URL: {result['url']}\n")
