@@ -7,11 +7,16 @@ import csv
 import os
 
 class ImprovedSuperteamBountyScraper:
-    def __init__(self, json_file='data/superteam_bounties.json'):
-        self.json_file = json_file
+    def __init__(self, links_file='data/bounty_links.txt', json_file='data/superteam_bounties.json'):
+        self.links_file = links_file
+        self.json_file = json_file  # Add this line
         self.base_url = 'https://earn.superteam.fun/listing/'
         self.results = []
         self.progress_file = 'output/scraping_progress.json'
+        self.bounty_data_cache = {}  # Cache for API data
+        
+        # XPath for country restriction element
+        self.country_xpath = '//*[@id="__next"]/div/div[4]/div/div/div[1]/div[1]/div[2]/div/button/div/span'
         
         # Multiple selector strategies to try
         self.description_selectors = [
@@ -275,37 +280,288 @@ class ImprovedSuperteamBountyScraper:
         self.save_results(filename_suffix='_sample')
         print(f"\n🎉 Sample scraping completed! Check the results.")
     
+    async def extract_country_restriction(self, page, url):
+        """Extract country restriction from the page"""
+        try:
+            # Try the exact XPath first
+            try:
+                element = await page.wait_for_selector(f'xpath={self.country_xpath}', timeout=5000)
+                if element:
+                    country_text = await element.text_content()
+                    country_restriction = country_text.strip() if country_text else None
+                    if country_restriction:
+                        print(f"  ✓ Found country restriction: {country_restriction}")
+                        return country_restriction
+            except Exception:
+                pass
+            
+            # Fallback: look for spans with country codes
+            try:
+                # Look for spans that might contain country codes
+                country_elements = await page.query_selector_all('span.text-slate-400')
+                for elem in country_elements:
+                    text = await elem.text_content()
+                    if text and len(text.strip()) == 2 and text.strip().isupper():
+                        country_restriction = text.strip()
+                        print(f"  ✓ Found country restriction (fallback): {country_restriction}")
+                        return country_restriction
+                
+                # If still not found, look for common country code patterns
+                all_spans = await page.query_selector_all('span')
+                for span in all_spans:
+                    text = await span.text_content()
+                    if text and text.strip() in ['IE', 'IN', 'VN', 'US', 'UK', 'CA', 'AU', 'DE', 'FR', 'GLOBAL']:
+                        country_restriction = text.strip()
+                        print(f"  ✓ Found country restriction (pattern): {country_restriction}")
+                        return country_restriction
+                        
+            except Exception:
+                pass
+            
+            # If no country restriction found, check if it might be global
+            page_content = await page.content()
+            if 'global' in page_content.lower() or not any(cc in page_content for cc in ['IE', 'IN', 'VN']):
+                print(f"  ✓ Assuming GLOBAL restriction")
+                return 'GLOBAL'
+            
+            print(f"  ⚠️  No country restriction found")
+            return None
+            
+        except Exception as e:
+            print(f"  ✗ Error extracting country restriction: {e}")
+            return None
+    
+    async def scrape_bounty_from_url(self, page, url, debug=False):
+        """Scrape description and country restriction for a single bounty from URL"""
+        slug = self.extract_slug_from_url(url)
+        
+        try:
+            print(f"\nScraping: {url}")
+            
+            # Navigate to the page
+            await page.goto(url, wait_until='domcontentloaded', timeout=30000)
+            
+            # Wait for content to load
+            await page.wait_for_timeout(3000)
+            
+            # Debug page structure if requested
+            if debug:
+                await self.debug_page_structure(page, slug)
+            
+            # Extract description using smart strategies
+            description = await self.extract_description_smart(page, slug)
+            
+            # Extract country restriction
+            country_restriction = await self.extract_country_restriction(page, url)
+            
+            # Extract basic info from the page
+            title = await page.title() or slug.replace('-', ' ').title()
+            
+            # Get reward amount from cached API data first
+            reward_amount = None
+            token = ""
+            
+            if slug in self.bounty_data_cache:
+                api_data = self.bounty_data_cache[slug]
+                reward_amount = api_data.get('rewardAmount')
+                token = api_data.get('token', '')
+                # Use API title if available
+                if api_data.get('title'):
+                    title = api_data['title']
+            
+            # Fallback: try to extract from page if not in cache
+            if reward_amount is None:
+                page_text = await page.evaluate('() => document.body.innerText')
+                reward_amount = self.extract_reward_amount_from_page(page_text)
+            
+            # Prepare result with country restriction included
+            result = {
+                'title': title,
+                'slug': slug,
+                'url': url,
+                'description': description,
+                'country_restriction': country_restriction,  # New field
+                'reward_amount': reward_amount,
+                'token': token,
+                'deadline': '',
+                'sponsor': '',
+                'status': 'active'
+            }
+            
+            success_msg = f"  ✓ Successfully scraped {slug}"
+            if country_restriction:
+                success_msg += f" (Country: {country_restriction})"
+            print(success_msg)
+            
+            return result
+            
+        except Exception as e:
+            print(f"  ✗ Error scraping {url}: {e}")
+            return {
+                'title': slug.replace('-', ' ').title(),
+                'slug': slug,
+                'url': url,
+                'description': f"Error: {str(e)}",
+                'country_restriction': None,
+                'reward_amount': None,
+                'token': '',
+                'deadline': '',
+                'sponsor': '',
+                'status': 'error'
+            }
+
+    async def scrape_all_bounties(self, debug=False):
+        """Scrape all bounties from the links file"""
+        # Load bounty data cache first
+        self.load_bounty_data_cache()
+        
+        links = self.load_bounty_links()
+        if not links:
+            print("No bounty links to scrape")
+            return
+        
+        print(f"Found {len(links)} bounty links to scrape...")
+        
+        # Load previous progress
+        progress = self.load_progress()
+        completed_urls = set(result.get('url', '') for result in progress.get('results', []))
+        self.results = progress.get('results', [])
+        
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(
+                headless=True,  # Set to False for debugging
+                args=['--no-sandbox', '--disable-dev-shm-usage']
+            )
+            
+            try:
+                context = await browser.new_context(
+                    user_agent='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+                )
+                
+                page = await context.new_page()
+                
+                for i, url in enumerate(links, 1):
+                    # Skip if already completed
+                    if url in completed_urls:
+                        print(f"[{i}/{len(links)}] Skipping {url} (already completed)")
+                        continue
+                    
+                    print(f"[{i}/{len(links)}] Processing {url}")
+                    result = await self.scrape_bounty_from_url(page, url, debug=debug)
+                    self.results.append(result)
+                    
+                    # Save progress every 5 bounties
+                    if i % 5 == 0:
+                        completed_urls_list = [r['url'] for r in self.results]
+                        self.save_progress(completed_urls_list, self.results)
+                        print(f"Progress saved ({i}/{len(links)} completed)")
+                    
+                    # Small delay between requests to be respectful
+                    await asyncio.sleep(2)
+                
+            finally:
+                await browser.close()
+        
+        # Final save
+        completed_urls_list = [r['url'] for r in self.results]
+        self.save_progress(completed_urls_list, self.results)
+        
+        # Save final results
+        self.save_results()
+        print(f"\n🎉 Scraping completed! Processed {len(self.results)} bounties.")
+
     def save_results(self, filename_suffix=''):
-        """Save results in multiple formats"""
+        """Save results in JSON format with country restrictions included"""
         if not self.results:
             print("No results to save")
             return
         
-        # Save as JSON
-        # Around line 285-289, update the save methods:
+        # Add summary statistics including country breakdown
+        summary = {
+            'total_bounties': len(self.results),
+            'successful_scrapes': len([r for r in self.results if r['description'] != 'Description not found' and not r['description'].startswith('Error:')]),
+            'country_breakdown': {},
+            'scraped_at': time.strftime('%Y-%m-%d %H:%M:%S')
+        }
+        
+        # Count country restrictions
+        for result in self.results:
+            if result.get('country_restriction'):
+                country = result['country_restriction']
+                summary['country_breakdown'][country] = summary['country_breakdown'].get(country, 0) + 1
+        
+        # Save as JSON with summary
+        output_data = {
+            'summary': summary,
+            'results': self.results
+        }
+        
         with open(f'output/bounty_descriptions{filename_suffix}.json', 'w', encoding='utf-8') as f:
-            json.dump(self.results, f, indent=2, ensure_ascii=False)
+            json.dump(output_data, f, indent=2, ensure_ascii=False)
         
         print(f"\nResults saved to:")
-        with open(f'output/bounty_descriptions{filename_suffix}.txt', 'w', encoding='utf-8') as f:
-            for result in self.results:
-                f.write(f"Title: {result['title']}\n")
-                f.write(f"URL: {result['url']}\n")
-                f.write(f"Reward: {result['reward_amount']} {result['token']}\n")
-                f.write(f"Sponsor: {result['sponsor']}\n")
-                f.write(f"Description: {result['description']}\n")
-                f.write("-" * 80 + "\n\n")
-        
-        print(f"Results saved to:")
         print(f"  - bounty_descriptions{filename_suffix}.json ({len(self.results)} entries)")
-        print(f"  - bounty_descriptions{filename_suffix}.txt")
+        print(f"\nCountry breakdown:")
+        for country, count in summary['country_breakdown'].items():
+            print(f"  {country}: {count} bounties")
+
+# Add these methods to the ImprovedSuperteamBountyScraper class (around line 280, after the save_results method from the sample scraper)
+
+    def load_bounty_links(self):
+        """Load bounty URLs from text file"""
+        try:
+            with open(self.links_file, 'r', encoding='utf-8') as f:
+                links = [line.strip() for line in f if line.strip()]
+            return links
+        except FileNotFoundError:
+            print(f"Error: {self.links_file} not found")
+            return []
+    
+    def extract_slug_from_url(self, url):
+        """Extract slug from full URL"""
+        if '/listing/' in url:
+            return url.split('/listing/')[-1]
+        return url
+    
+    def load_bounty_data_cache(self):
+        """Load and cache bounty data from API JSON for quick lookup"""
+        try:
+            with open(self.json_file, 'r', encoding='utf-8') as f:
+                bounties = json.load(f)
+                # Create a lookup cache by slug
+                for bounty in bounties:
+                    self.bounty_data_cache[bounty['slug']] = bounty
+                print(f"Loaded {len(bounties)} bounties into cache")
+        except FileNotFoundError:
+            print(f"Warning: {self.json_file} not found. Reward amounts will be extracted from pages.")
+        except json.JSONDecodeError:
+            print(f"Error: Invalid JSON in {self.json_file}")
+    
+    def extract_reward_amount_from_page(self, page_text):
+        """Extract numeric reward amount from page content as fallback"""
+        import re
+        
+        # Look for patterns like "500 USDC", "$500", "2,000 USDC"
+        patterns = [
+            r'(\d{1,3}(?:,\d{3})*)\s*(?:USDC|SOL|sUSD|JUP)',
+            r'\$(\d{1,3}(?:,\d{3})*)',
+            r'Total Prizes[\s\S]*?(\d{1,3}(?:,\d{3})*)'
+        ]
+        
+        for pattern in patterns:
+            matches = re.findall(pattern, page_text, re.IGNORECASE)
+            if matches:
+                # Return the first numeric match, removing commas
+                return int(matches[0].replace(',', ''))
+        
+        return None
 
 # Main execution
 async def main():
     scraper = ImprovedSuperteamBountyScraper()
     
-    # First, test with a small sample
-    await scraper.scrape_sample_bounties(sample_size=3, debug=True)
+    # Scrape all bounties from bounty_links.txt
+    await scraper.scrape_all_bounties(debug=False)
 
 if __name__ == "__main__":
     asyncio.run(main())
